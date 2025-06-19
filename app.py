@@ -1,69 +1,89 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+import joblib
+import shap
+import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import os
 
-# Load dataset
-dataset = pd.read_csv("heart.csv")
+# Set the directory for model and data files
+MODEL_DIR = 'train_model'
 
-# Split data into features and target
-predictors = dataset.drop("target", axis=1)
-target = dataset["target"]
+# Load model and features
+model = joblib.load(os.path.join(MODEL_DIR, 'heart_model_pipeline.joblib'))
+all_features = joblib.load(os.path.join(MODEL_DIR, 'model_features.joblib'))
+top_features = ['cp', 'ca', 'thal', 'thalach', 'oldpeak']
 
-# Train-test split
-X_train, X_test, Y_train, Y_test = train_test_split(predictors, target, test_size=0.20, random_state=0)
+# Load training data to get medians/modes for autofill
+train_df = pd.read_csv(os.path.join(MODEL_DIR, 'heart.csv'))
+medians = train_df.median(numeric_only=True)
+modes = train_df.mode().iloc[0]
 
-# Define Random Forest model
-model = RandomForestClassifier()
+def get_default_value(col):
+    if col in medians:
+        return medians[col]
+    return modes[col]
 
-# Train the model
-model.fit(X_train, Y_train)
-
-# Make predictions and calculate accuracy
-Y_pred = model.predict(X_test)
-accuracy = accuracy_score(Y_pred, Y_test)
-
-# Streamlit interface
 st.set_page_config(page_title="Heart Disease", page_icon="❤️")
-st.title("Heart Disease Prediction")
+st.title("Heart Disease Risk Checker")
+st.write("""
+This tool predicts your risk of heart disease using only the most important information. 
+Please enter the following details about yourself:
+""")
 
-# Display data overview
-if st.checkbox('Show data overview'):
-    st.write(dataset.head())
+st.sidebar.header("Enter Your Information:")
+cp = st.sidebar.selectbox(
+    "Type of Chest Pain",
+    [1, 2, 3, 4],
+    format_func=lambda x: {
+        1: "Typical angina (chest pain from heart)",
+        2: "Atypical angina (unusual chest pain)",
+        3: "Non-anginal pain (not heart-related)",
+        4: "No chest pain (asymptomatic)"
+    }[x],
+    help="What best describes your chest pain?"
+)
+ca = st.sidebar.selectbox(
+    "Number of Major Heart Vessels Blocked (0-3)",
+    [0, 1, 2, 3],
+    help="How many major blood vessels are blocked, as seen in a scan? (0 means none)"
+)
+thal = st.sidebar.selectbox(
+    "Thalassemia Type (a blood disorder)",
+    [3, 6, 7],
+    format_func=lambda x: {
+        3: "Normal blood",
+        6: "Fixed defect (old heart damage)",
+        7: "Reversible defect (current heart issue)"
+    }[x],
+    help="Has a doctor told you about a blood disorder or heart scan result?"
+)
+thalach = st.sidebar.number_input(
+    "Maximum Heart Rate Achieved (bpm)",
+    min_value=71, max_value=202, value=150,
+    step=1,
+    help="What was the highest your heart rate got during exercise or a test? (beats per minute)"
+)
+oldpeak = st.sidebar.number_input(
+    "ST Depression (Oldpeak)",
+    min_value=0.0, max_value=6.2, value=1.0,
+    step=0.1,
+    format="%.2f",
+    help="How much did your ECG reading drop during exercise? (Ask your doctor if unsure)"
+)
 
-# User inputs for prediction
-st.sidebar.header("Enter Patient Data:")
-age = st.sidebar.slider("Age", 29, 77, 50)
-sex = st.sidebar.selectbox("Sex (1: Male, 0: Female)", [1, 0])
-cp = st.sidebar.selectbox("Chest Pain Type (1: Typical, 2: Atypical, 3: Non-anginal, 4: Asymptomatic)", [1, 2, 3, 4])
-trestbps = st.sidebar.number_input("Resting Blood Pressure", min_value=94, max_value=200, value=120)
-chol = st.sidebar.number_input("Serum Cholesterol (mg/dl)", min_value=126, max_value=564, value=200)
-fbs = st.sidebar.selectbox("Fasting Blood Sugar > 120 mg/dl (1: True, 0: False)", [1, 0])
-restecg = st.sidebar.selectbox("Resting Electrocardiographic Results (0, 1, 2)", [0, 1, 2])
-thalach = st.sidebar.number_input("Maximum Heart Rate Achieved", min_value=71, max_value=202, value=150)
-exang = st.sidebar.selectbox("Exercise Induced Angina (1: Yes, 0: No)", [1, 0])
-oldpeak = st.sidebar.number_input("Oldpeak", min_value=0.0, max_value=6.2, value=1.0)
-slope = st.sidebar.selectbox("Slope of Peak Exercise ST Segment (1, 2, 3)", [1, 2, 3])
-ca = st.sidebar.selectbox("Number of Major Vessels Colored by Fluoroscopy (0-3)", [0, 1, 2, 3])
-thal = st.sidebar.selectbox("Thalassemia (3: Normal, 6: Fixed Defect, 7: Reversible Defect)", [3, 6, 7])
+# Build input row for the model using only the 5 features
+input_data = pd.DataFrame([[cp, ca, thal, thalach, oldpeak]], columns=top_features)
 
-# Input data for prediction
-input_data = np.array([age, sex, cp, trestbps, chol, fbs, restecg, thalach, exang, oldpeak, slope, ca, thal]).reshape(1, -1)
-
-# Button to start prediction
-if st.button("Start Prediction"):
-    # Make prediction using the trained Random Forest model
-    prediction = model.predict(input_data)
-
-    # Present the result in a more user-friendly way
-    if prediction[0] == 1:
-        st.markdown(f"### **Warning: You are at risk of having heart disease.**")
-        st.write("Based on the input data you have provided, our model has predicted that you may have heart disease. It is highly recommended that you consult a medical professional for a thorough check-up and diagnosis.")
+if st.button("Check My Heart Disease Risk"):
+    prediction = model.predict(input_data)[0]
+    proba = model.predict_proba(input_data)[0][1]
+    if prediction == 1:
+        st.markdown(f"## ✅ You are likely not at risk of heart disease.")
+        st.write(f"**Estimated risk:** {1-proba:.2%}")
+        st.success("Keep maintaining a healthy lifestyle!")
     else:
-        st.markdown(f"### **Good news: You are not at risk of having heart disease.**")
-        st.write("Based on the input data you have provided, our model has predicted that you do not have heart disease. However, maintaining a healthy lifestyle is still important for overall health.")
-
-    # Show accuracy of the Random Forest model
-    st.write(f"Accuracy of Random Forest model: {accuracy * 100:.2f}%")
+        st.markdown(f"## ⚠️ You may be at risk of heart disease.")
+        st.write(f"**Estimated risk:** {1-proba:.2%}")
+        st.info("This is not a diagnosis. Please consult a doctor for a full check-up.")
